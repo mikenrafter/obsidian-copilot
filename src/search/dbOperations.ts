@@ -10,6 +10,7 @@ import { create, insert, Orama, remove, removeMultiple, search } from "@orama/or
 import { Mutex } from "async-mutex";
 import { md5 } from "@/utils/hash";
 import { App, Notice, Platform } from "obsidian";
+import { resolveSemanticIndexBaseDir } from "./semanticIndexPath";
 import { ChunkedStorage } from "./chunkedStorage";
 import { getMatchingPatterns, getVectorLength, shouldIndexFile } from "./searchUtils";
 
@@ -238,24 +239,21 @@ export class DBOperations {
     return this.dbPath;
   }
 
-  // This is the path according to the setting's enableIndexSync
+  /**
+   * Base directory for semantic index storage from settings.
+   */
   public async getDbPath(): Promise<string> {
-    const vaultRoot = this.app.vault.getRoot().path;
-    let baseDir: string;
+    const settings = getSettings();
+    const baseDir = resolveSemanticIndexBaseDir({
+      semanticIndexFolder: settings.semanticIndexFolder,
+      enableIndexSync: settings.enableIndexSync,
+      vaultConfigDir: this.app.vault.configDir,
+      vaultRootPath: this.app.vault.getRoot().path,
+    });
 
-    if (getSettings().enableIndexSync) {
-      baseDir = this.app.vault.configDir;
-    } else {
-      // If vaultRoot is just "/", treat it as empty
-      const effectiveRoot = vaultRoot === "/" ? "" : vaultRoot;
-      const prefix = effectiveRoot === "" || effectiveRoot.startsWith("/") ? "" : "/";
-      baseDir = `${prefix}${effectiveRoot}/.copilot-index`;
-
-      // Ensure the directory exists
-      if (!(await this.app.vault.adapter.exists(baseDir))) {
-        await this.app.vault.adapter.mkdir(baseDir);
-        logInfo("Created directory:", baseDir);
-      }
+    if (!(await this.app.vault.adapter.exists(baseDir))) {
+      await this.app.vault.adapter.mkdir(baseDir);
+      logInfo("Created semantic index directory:", baseDir);
     }
 
     return baseDir;

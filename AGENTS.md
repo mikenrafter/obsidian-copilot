@@ -22,6 +22,14 @@ Copilot for Obsidian is an AI-powered assistant plugin that integrates various L
 - `npm run format:check` - Check formatting without changing files
 - **Before PR:** Always run `npm run format && npm run lint`
 
+### Nix dev shell
+
+- `nix develop` — Node 22 + git; adds `node_modules/.bin` to `PATH` after `npm ci` (jest, husky, eslint, …)
+- `nix develop -c npm ci` — install deps; runs `prepare` → husky hook install
+- `nix develop -c npm test` — jest unit tests (same as `npm run test`)
+- `nix run .#test` — jest with auto `npm ci` if needed
+- `nix run .#husky` — reinstall git hooks (pre-commit runs nano-staged)
+
 ### Testing
 
 - `npm run test` - Run unit tests (excludes integration tests)

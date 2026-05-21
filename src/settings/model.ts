@@ -3,6 +3,7 @@ import { atom, createStore, useAtomValue } from "jotai";
 import { v4 as uuidv4 } from "uuid";
 
 import { type ChainType } from "@/chainType";
+import { normalizeSemanticIndexFolder } from "@/search/semanticIndexPath";
 import { type SortStrategy, isSortStrategy } from "@/utils/recentUsageManager";
 import {
   AGENT_MAX_ITERATIONS_LIMIT,
@@ -96,6 +97,8 @@ export interface CopilotSettings {
   chatNoteContextPath: string;
   chatNoteContextTags: string[];
   enableIndexSync: boolean;
+  /** Vault-relative folder for semantic index files; empty uses enableIndexSync defaults. */
+  semanticIndexFolder: string;
   debug: boolean;
   /** @deprecated Removed — keychain is now the sole encryption mechanism. */
   enableEncryption?: never;
@@ -649,6 +652,10 @@ export function sanitizeSettings(settings: CopilotSettings): CopilotSettings {
       : DEFAULT_SETTINGS.userSystemPromptsFolder;
 
   sanitizedSettings.qaExclusions = sanitizeQaExclusions(settingsToSanitize.qaExclusions);
+
+  sanitizedSettings.semanticIndexFolder = normalizeSemanticIndexFolder(
+    settingsToSanitize.semanticIndexFolder
+  );
 
   return sanitizedSettings;
 }

@@ -9,6 +9,7 @@ import { HelpTooltip } from "@/components/ui/help-tooltip";
 import { getModelDisplayWithIcons } from "@/components/ui/model-display";
 import { SettingItem } from "@/components/ui/setting-item";
 import { VAULT_VECTOR_STORE_STRATEGIES } from "@/constants";
+import { DEFAULT_SEMANTIC_INDEX_FOLDER } from "@/constants";
 import { getModelKeyFromModel, updateSetting, useSettingsValue } from "@/settings/model";
 import { PatternListEditor } from "@/settings/v2/components/PatternListEditor";
 
@@ -296,13 +297,51 @@ export const QASettings: React.FC = () => {
             />
           </SettingItem>
 
+          {/* Semantic index folder */}
+          <SettingItem
+            type="text"
+            title="Semantic index folder"
+            description={
+              <div className="tw-space-y-1">
+                <p className="tw-leading-none">
+                  Vault-relative folder where embedding index files are stored and loaded. Leave
+                  empty to use the defaults below.
+                </p>
+                <p className="tw-text-sm tw-text-muted">
+                  Empty + Sync on: <code>{app.vault.configDir}</code>. Empty + Sync off:{" "}
+                  <code>.copilot-index</code> at vault root. Changing this folder does not move an
+                  existing index — reindex or copy files manually.
+                </p>
+              </div>
+            }
+            value={settings.semanticIndexFolder}
+            onChange={(value) => {
+              const next = value.trim();
+              const prev = settings.semanticIndexFolder.trim();
+              if (next === prev) return;
+
+              const apply = () => updateSetting("semanticIndexFolder", next);
+
+              if (settings.enableSemanticSearchV3 && prev !== next) {
+                new RebuildIndexConfirmModal(app, apply).open();
+                return;
+              }
+              apply();
+            }}
+            placeholder={DEFAULT_SEMANTIC_INDEX_FOLDER || "(default)"}
+          />
+
           {/* Enable Obsidian Sync */}
           <SettingItem
             type="switch"
             title="Enable Obsidian Sync for Copilot index"
-            description={`If enabled, store the semantic index in ${app.vault.configDir} so it syncs with Obsidian Sync. If disabled, store it under .copilot/ at the vault root.`}
+            description={`When the index folder above is empty, store the semantic index in ${app.vault.configDir} so it syncs with Obsidian Sync. When disabled, store it under .copilot-index at the vault root.`}
             checked={settings.enableIndexSync}
-            onCheckedChange={(checked) => updateSetting("enableIndexSync", checked)}
+            disabled={settings.semanticIndexFolder.trim().length > 0}
+            onCheckedChange={(checked) => {
+              if (settings.semanticIndexFolder.trim().length > 0) return;
+              updateSetting("enableIndexSync", checked);
+            }}
           />
 
           {/* Disable index loading on mobile */}

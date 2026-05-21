@@ -19,6 +19,8 @@ const DEFAULT_SYSTEM_PROMPTS_FOLDER = `${COPILOT_FOLDER_ROOT}/system-prompts`;
 const DEFAULT_PROJECTS_FOLDER = `${COPILOT_FOLDER_ROOT}/projects`;
 const DEFAULT_CONVERTED_DOC_OUTPUT_FOLDER = "";
 export const DEFAULT_QA_EXCLUSIONS_SETTING = COPILOT_FOLDER_ROOT;
+/** Empty = use enableIndexSync / legacy `.copilot-index` location. */
+export const DEFAULT_SEMANTIC_INDEX_FOLDER = "";
 export const DEFAULT_SYSTEM_PROMPT = `You are Obsidian Copilot, a helpful assistant that integrates AI to Obsidian note-taking.
   1. Never mention that you do not have access to something. Always rely on the user provided context.
   2. Always answer to the best of your knowledge. If you are unsure about something, say so and ask the user to provide more context.
@@ -936,6 +938,7 @@ export const DEFAULT_SETTINGS: CopilotSettings = {
   chatNoteContextPath: "",
   chatNoteContextTags: [],
   enableIndexSync: true,
+  semanticIndexFolder: DEFAULT_SEMANTIC_INDEX_FOLDER,
   debug: false,
   maxSourceChunks: DEFAULT_MAX_SOURCE_CHUNKS,
   enableInlineCitations: true,

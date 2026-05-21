@@ -158,9 +158,22 @@ This is an experimental feature. Not all models handle it well.
 
 ---
 
+## Index Storage Location
+
+Control where Copilot saves and loads the semantic (embedding) index:
+
+**Settings → Copilot → QA → Semantic index folder**
+
+- Enter a **vault-relative folder** (for example `copilot/semantic-index` or `.copilot-index`).
+- Leave **empty** to use the built-in defaults:
+  - **Enable Obsidian Sync for Copilot index** on → index lives in `.obsidian` (syncs with Obsidian Sync).
+  - Sync off → index lives in `.copilot-index` at the vault root (hidden from the file explorer).
+
+Changing the folder does not move an existing index. Copy the index files to the new folder or run **Force reindex vault** after changing the setting.
+
 ## Obsidian Sync
 
-If you use Obsidian Sync, the vector index can be synced across devices. Enable **Settings → Copilot → QA → Enable Index Sync**.
+If you use Obsidian Sync, the vector index can be synced across devices. Leave **Semantic index folder** empty and enable **Settings → Copilot → QA → Enable Obsidian Sync for Copilot index**.
 
 > **Note**: The index can be large (hundreds of MB for big vaults). Keep this in mind for sync limits and mobile data usage.
 

@@ -59,10 +59,11 @@ export default class VectorStoreManager {
       const prevSettings = this.lastKnownSettings;
       this.lastKnownSettings = { ...settings };
 
-      // Handle path changes (enableIndexSync)
+      // Handle path changes (enableIndexSync or custom index folder)
       if (
-        settings.enableIndexSync !== prevSettings?.enableIndexSync &&
-        this.activeBackendKey === "orama"
+        this.activeBackendKey === "orama" &&
+        (settings.enableIndexSync !== prevSettings?.enableIndexSync ||
+          settings.semanticIndexFolder !== prevSettings?.semanticIndexFolder)
       ) {
         const embeddingInstance = await this.embeddingsManager.getEmbeddingsAPI();
         await this.oramaBackend.reinitializeForIndexSyncChange(embeddingInstance);
