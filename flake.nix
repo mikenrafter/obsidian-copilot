@@ -66,7 +66,12 @@
 
             if [ -x node_modules/.bin/jest ] && [ -x node_modules/.bin/husky ]; then
               echo "  jest   $(jest --version 2>/dev/null || true)  — npm test, or: nix run .#test"
-              echo "  husky  $(husky --version 2>/dev/null || echo installed) — hooks in .husky/; refresh: nix run .#husky"
+              # Intentionally avoid running `husky --version`: Husky v9 treats its first
+              # argument as a directory path, so `husky --version` would silently run
+              # `git config core.hooksPath "--version"` and corrupt the repo config.
+              _husky_ver=$(node -e "try{process.stdout.write(require('./node_modules/husky/package.json').version)}catch(e){}" 2>/dev/null || true)
+              echo "  husky  ''${_husky_ver:-(installed)} — hooks in .husky/; refresh: nix run .#husky"
+              unset _husky_ver
             else
               echo "  jest, husky  — not installed yet; run: npm ci  (or: nix run .#test)"
             fi
