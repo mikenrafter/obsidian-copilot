@@ -3,7 +3,6 @@ import {
   CompanionClientConfig,
   CompanionVectorClient,
 } from "@/search/companion/CompanionVectorClient";
-import { RetrieverFactory } from "@/search/RetrieverFactory";
 import { CopilotSettings } from "@/settings/model";
 
 /**
@@ -11,20 +10,12 @@ import { CopilotSettings } from "@/settings/model";
  *
  * Centralizes the lifecycle: the singleton is created on demand the first
  * time companion mode is enabled, its config is updated in place when the
- * user changes settings, and {@link RetrieverFactory} is notified whenever
- * the enabled flag flips so it picks up (or releases) the backend without
- * a plugin reload.
- *
- * NOTE: registration with {@link RetrieverFactory.registerSelfHostedBackend}
- * is what makes the existing self-host code path use the companion. The
- * factory still gates on `isSelfHostModeValid()` + `selfHostUrl`, so Phase
- * 1 will need to teach the factory about a dedicated companion key. For
- * Phase 0 the registration is sufficient to let `Test Connection` and any
- * direct callers exercise the backend.
+ * user changes settings, and other callers can fetch the active instance
+ * without re-constructing network state.
  */
 class CompanionRegistry {
   private client: CompanionVectorClient | null = null;
-  private registered = false;
+  private wasEnabled = false;
 
   /** The current client instance, or null when companion mode is off. */
   get(): CompanionVectorClient | null {
@@ -38,25 +29,24 @@ class CompanionRegistry {
    */
   applySettings(settings: CopilotSettings): void {
     if (!settings.enableVectorCompanion) {
-      if (this.registered) {
-        RetrieverFactory.clearSelfHostedBackend();
-        this.registered = false;
-        logInfo("CompanionRegistry: companion disabled; backend cleared");
+      if (this.wasEnabled) {
+        logInfo("CompanionRegistry: companion disabled");
       }
       this.client = null;
+      this.wasEnabled = false;
       return;
     }
     const config = buildClientConfig(settings);
     if (!this.client) {
       this.client = new CompanionVectorClient(config);
+      logInfo(`CompanionRegistry: created companion client at ${config.host}:${config.port}`);
     } else {
       this.client.updateConfig(config);
+      logInfo(
+        `CompanionRegistry: updated companion client config for ${config.host}:${config.port}`
+      );
     }
-    if (!this.registered) {
-      RetrieverFactory.registerSelfHostedBackend(this.client);
-      this.registered = true;
-      logInfo(`CompanionRegistry: registered companion at ${config.host}:${config.port}`);
-    }
+    this.wasEnabled = true;
   }
 }
 

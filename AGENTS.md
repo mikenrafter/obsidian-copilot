@@ -36,6 +36,13 @@ Copilot for Obsidian is an AI-powered assistant plugin that integrates various L
 - `npm run test:integration` - Run integration tests (requires API keys)
 - Run single test: `npm test -- -t "test name"`
 
+### Companion Service
+
+- `npm --prefix companion run typecheck` - Type-check the localhost vector companion package
+- `npm --prefix companion run test` - Run companion unit tests
+- `npm --prefix companion run build` - Build the companion TypeScript package
+- `npm --prefix companion run dev` - Start the companion development server (long-running; only run when explicitly needed)
+
 ### Obsidian CLI (Live Testing)
 
 The Obsidian desktop app includes a CLI for plugin development. Use the full path:

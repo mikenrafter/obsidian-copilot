@@ -29,6 +29,20 @@ Semantic search finds notes that are conceptually related, even if they don't sh
 - **Cost**: Requires embedding API calls (costs money for paid embedding models)
 - **Enable**: **Settings → Copilot → QA → Enable Semantic Search** — turn this on to activate semantic search
 
+### Vector Companion (Experimental)
+
+Vector Companion is an experimental desktop-only option that moves semantic vector indexing out of Obsidian and into a separate localhost service. Lexical search still runs inside Obsidian.
+
+Use it only if you are comfortable running a companion process alongside Obsidian.
+
+- **Enable**: **Settings → Copilot → QA → Enable Vector Companion**
+- **Requires**: the companion service running on the configured host and port (default: `127.0.0.1:7261`)
+- **Initial setup**: after enabling it, run **Force reindex vault** so the companion can scan your vault and build its own index
+- **No automatic migration**: existing local semantic indexes are not copied into the companion. Turning the companion off restores the regular local semantic index path.
+- **Desktop only**: the companion reads your vault from the local filesystem, so it is not intended for mobile use.
+
+If the companion is unavailable, Copilot falls back to local search and shows a notice. Check the companion's health in **Settings → Copilot → QA → Test connection**.
+
 ---
 
 ## Index Management
@@ -39,10 +53,10 @@ The semantic search index stores the vector embeddings of your notes. Manage it 
 
 Controls when Copilot automatically updates the index:
 
-| Strategy | When the index updates |
-|---|---|
-| **NEVER** | Manual only — you must trigger indexing yourself |
-| **ON STARTUP** | Updates when Obsidian starts or the plugin reloads |
+| Strategy           | When the index updates                                                 |
+| ------------------ | ---------------------------------------------------------------------- |
+| **NEVER**          | Manual only — you must trigger indexing yourself                       |
+| **ON STARTUP**     | Updates when Obsidian starts or the plugin reloads                     |
 | **ON MODE SWITCH** | Updates when you switch to Vault QA or Copilot Plus mode (Recommended) |
 
 The default is **ON MODE SWITCH**.
@@ -60,6 +74,7 @@ Updates only notes that have been added, modified, or deleted since the last ind
 **Command palette → Force reindex vault**
 
 Rebuilds the entire index from scratch. Use this if:
+
 - You changed your embedding model
 - The index seems corrupted or missing results
 - You've made many changes and want a clean state
@@ -104,9 +119,10 @@ This shows the total token count across your vault, which you can use to estimat
 **Settings → Copilot → QA → Exclusions**
 
 Comma-separated list of patterns. Notes matching these patterns are excluded. Supports:
+
 - Folder names: `private` — excludes the folder named "private"
 - Folder paths: `Work/Confidential` — excludes that specific subfolder
-- File extensions: `.pdf` — excludes all PDF files
+- File extensions: `*.pdf` — excludes all PDF files
 - Tags: `#private` — excludes all notes tagged `#private`
 - Note titles: `My Secret Note` — excludes that specific note
 

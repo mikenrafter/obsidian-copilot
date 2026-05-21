@@ -1,66 +1,208 @@
 /**
- * Deterministic, model-free pseudo-embedder for the Phase 0 spike.
- *
- * WHY: lets the spike run with zero external deps (no API key, no model
- * download) while still exercising the full request → embed → ANN → respond
- * path. Same input string always produces the same vector, so `seed.ts` and
- * the server agree without coordinating on a model.
- *
- * WHAT IT DOES: token-hash bag-of-words projected into a fixed-dim L2-normed
- * float vector. Cosine similarity between two such vectors reflects shared
- * tokens only — it is NOT semantic. Phase 1 replaces this with a real
- * embedding provider (OpenAI / Ollama / etc.) configured server-side.
+ * Provider-backed embedding adapter used by the companion indexer and query path.
  */
 
-const TOKEN_REGEX = /[a-z0-9]+/g;
+import type { CompanionConfig } from "../config.js";
 
-/**
- * Hash a token to a non-negative 32-bit int (FNV-1a). Stable across runs and
- * platforms; do NOT swap this without re-seeding the DB, because changing the
- * hash changes every stored vector.
- */
-function hashToken(token: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < token.length; i++) {
-    hash ^= token.charCodeAt(i);
-    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
-  }
-  return hash >>> 0;
+interface EmbeddingResolution {
+  provider: "openai" | "ollama";
+  modelName: string;
+  modelId: string;
 }
 
-/** Tokenize on ASCII word chars; lowercase. Good enough for the spike. */
-function tokenize(text: string): string[] {
-  return text.toLowerCase().match(TOKEN_REGEX) ?? [];
+/** Result payload from embedding one or more texts. */
+export interface EmbeddedBatch {
+  vectors: Float32Array[];
+  dimension: number;
+  modelId: string;
 }
 
 /**
- * Build a deterministic embedding for `text` of length `dim`.
- *
- * Algorithm: for each token, increment `vec[hash(token) % dim]` by 1, then
- * L2-normalize. Empty input returns a zero vector (cosine == 0 against
- * everything).
+ * Embed one query string.
  */
-export function embed(text: string, dim: number): Float32Array {
-  const vec = new Float32Array(dim);
-  for (const token of tokenize(text)) {
-    const idx = hashToken(token) % dim;
-    vec[idx] = (vec[idx] as number) + 1;
+export async function embedQuery(
+  query: string,
+  modelHint: string,
+  config: CompanionConfig
+): Promise<EmbeddedBatch> {
+  return embedTexts([query], modelHint, config);
+}
+
+/**
+ * Embed many texts using the configured provider/model.
+ */
+export async function embedTexts(
+  texts: string[],
+  modelHint: string,
+  config: CompanionConfig
+): Promise<EmbeddedBatch> {
+  if (texts.length === 0) {
+    throw new Error("embedTexts requires at least one input text");
   }
-  let norm = 0;
-  for (let i = 0; i < dim; i++) {
-    const v = vec[i] as number;
-    norm += v * v;
+
+  const resolution = resolveEmbeddingModel(modelHint, config);
+  if (resolution.provider === "openai") {
+    return embedWithOpenAI(texts, resolution, config);
   }
-  norm = Math.sqrt(norm);
-  if (norm > 0) {
-    for (let i = 0; i < dim; i++) {
-      vec[i] = (vec[i] as number) / norm;
+  return embedWithOllama(texts, resolution, config);
+}
+
+/**
+ * Resolve provider + model from a model hint string and runtime config.
+ */
+function resolveEmbeddingModel(modelHint: string, config: CompanionConfig): EmbeddingResolution {
+  const candidate = modelHint?.trim() || config.defaultEmbeddingModel;
+
+  if (candidate.startsWith("openai:")) {
+    const modelName = candidate.slice("openai:".length).trim();
+    if (!modelName) {
+      throw new Error("openai model id is empty");
+    }
+    return { provider: "openai", modelName, modelId: `openai:${modelName}` };
+  }
+
+  if (candidate.startsWith("ollama:")) {
+    const modelName = candidate.slice("ollama:".length).trim();
+    if (!modelName) {
+      throw new Error("ollama model id is empty");
+    }
+    return { provider: "ollama", modelName, modelId: `ollama:${modelName}` };
+  }
+
+  const provider = config.defaultEmbeddingProvider;
+  if (provider === "openai") {
+    return { provider, modelName: candidate, modelId: `openai:${candidate}` };
+  }
+  return { provider, modelName: candidate, modelId: `ollama:${candidate}` };
+}
+
+/**
+ * Call OpenAI-compatible embeddings API.
+ */
+async function embedWithOpenAI(
+  texts: string[],
+  resolution: EmbeddingResolution,
+  config: CompanionConfig
+): Promise<EmbeddedBatch> {
+  if (!config.openAIApiKey) {
+    throw new Error("OPENAI_API_KEY is required for openai embeddings");
+  }
+
+  const url = `${config.openAIBaseUrl.replace(/\/$/, "")}/v1/embeddings`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.openAIApiKey}`,
+    },
+    body: JSON.stringify({
+      model: resolution.modelName,
+      input: texts,
+      encoding_format: "float",
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await safeResponseText(response);
+    throw new Error(`OpenAI embeddings failed (${response.status}): ${detail}`);
+  }
+
+  const payload = (await response.json()) as {
+    data?: Array<{ embedding?: number[]; index?: number }>;
+  };
+
+  const items = payload.data ?? [];
+  if (items.length !== texts.length) {
+    throw new Error(`OpenAI returned ${items.length} embeddings for ${texts.length} inputs`);
+  }
+
+  const vectors = items
+    .slice()
+    .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+    .map((item, idx) => {
+      if (!Array.isArray(item.embedding) || item.embedding.length === 0) {
+        throw new Error(`OpenAI response missing embedding at index ${idx}`);
+      }
+      return Float32Array.from(item.embedding);
+    });
+
+  const dimension = vectors[0]?.length ?? 0;
+  if (dimension <= 0) {
+    throw new Error("OpenAI returned zero-length embedding vectors");
+  }
+
+  for (const vector of vectors) {
+    if (vector.length !== dimension) {
+      throw new Error("OpenAI returned inconsistent embedding dimensions");
     }
   }
-  return vec;
+
+  return {
+    vectors,
+    dimension,
+    modelId: resolution.modelId,
+  };
 }
 
-/** Pack a Float32Array as the little-endian bytes sqlite-vec expects. */
-export function vectorToBlob(vec: Float32Array): Buffer {
-  return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+/**
+ * Call Ollama /api/embeddings endpoint for each text.
+ */
+async function embedWithOllama(
+  texts: string[],
+  resolution: EmbeddingResolution,
+  config: CompanionConfig
+): Promise<EmbeddedBatch> {
+  const url = `${config.ollamaHost.replace(/\/$/, "")}/api/embeddings`;
+  const vectors: Float32Array[] = [];
+
+  for (const text of texts) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: resolution.modelName,
+        prompt: text,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await safeResponseText(response);
+      throw new Error(`Ollama embeddings failed (${response.status}): ${detail}`);
+    }
+
+    const payload = (await response.json()) as { embedding?: number[] };
+    if (!Array.isArray(payload.embedding) || payload.embedding.length === 0) {
+      throw new Error("Ollama response missing embedding vector");
+    }
+    vectors.push(Float32Array.from(payload.embedding));
+  }
+
+  const dimension = vectors[0]?.length ?? 0;
+  if (dimension <= 0) {
+    throw new Error("Ollama returned zero-length embedding vectors");
+  }
+
+  for (const vector of vectors) {
+    if (vector.length !== dimension) {
+      throw new Error("Ollama returned inconsistent embedding dimensions");
+    }
+  }
+
+  return {
+    vectors,
+    dimension,
+    modelId: resolution.modelId,
+  };
+}
+
+/**
+ * Safely parse error response text with a short cap.
+ */
+async function safeResponseText(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    return text.slice(0, 500);
+  } catch {
+    return "(failed to parse response body)";
+  }
 }

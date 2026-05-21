@@ -1,8 +1,9 @@
 import { logInfo, logWarn } from "@/logger";
 import { isSelfHostModeValid } from "@/plusUtils";
 import { shouldUseMiyo } from "@/miyo/miyoUtils";
+import { companionRegistry } from "@/search/companion/companionRegistry";
 import { getSettings, CopilotSettings } from "@/settings/model";
-import { App } from "obsidian";
+import { App, Notice } from "obsidian";
 import { SelfHostRetriever, VectorSearchBackend } from "./selfHostRetriever";
 import { MiyoSemanticRetriever } from "./miyo/MiyoSemanticRetriever";
 import { MergedSemanticRetriever } from "./v3/MergedSemanticRetriever";
@@ -52,7 +53,7 @@ interface NormalizedRetrieverOptions {
  */
 export interface RetrieverSelectionResult {
   retriever: DocumentRetriever;
-  type: "self_hosted" | "semantic" | "lexical";
+  type: "self_hosted" | "semantic" | "lexical" | "companion";
   reason: string;
 }
 
@@ -89,13 +90,15 @@ export interface DocumentRetriever {
  * - Any other components that need search
  *
  * Priority order:
- * 1. Miyo-backed semantic search (self-host mode + Miyo toggle)
- * 2. Self-host mode backend (if registered)
- * 3. Semantic search / MergedSemanticRetriever (if enabled)
- * 4. Lexical search / TieredLexicalRetriever (default)
+ * 1. Companion semantic leg + lexical merge (when companion mode is enabled)
+ * 2. Miyo-backed semantic search (self-host mode + Miyo toggle)
+ * 3. Self-host mode backend (if registered)
+ * 4. Semantic search / MergedSemanticRetriever (if enabled)
+ * 5. Lexical search / TieredLexicalRetriever (default)
  */
 export class RetrieverFactory {
   private static selfHostedBackend: VectorSearchBackend | null = null;
+  private static companionUnavailableNoticeShown = false;
 
   /**
    * Register a self-host mode vector search backend.
@@ -141,6 +144,43 @@ export class RetrieverFactory {
 
     // Normalize options with defaults
     const normalizedOptions = normalizeOptions(options);
+
+    // Dedicated companion mode (semantic leg from companion + local lexical merge)
+    if (currentSettings.enableVectorCompanion) {
+      const companionBackend = companionRegistry.get();
+      if (companionBackend) {
+        try {
+          const isAvailable = await companionBackend.isAvailable();
+          if (isAvailable) {
+            const semanticRetriever = new SelfHostRetriever(
+              app,
+              companionBackend,
+              normalizedOptions
+            );
+            const retriever = new MergedSemanticRetriever(
+              app,
+              normalizedOptions,
+              semanticRetriever
+            );
+            RetrieverFactory.companionUnavailableNoticeShown = false;
+            logInfo("RetrieverFactory: Using companion semantic retriever");
+            return {
+              retriever,
+              type: "companion",
+              reason: "Companion mode enabled and backend is available",
+            };
+          }
+        } catch (error) {
+          logWarn("RetrieverFactory: Companion availability check failed", error);
+        }
+      }
+
+      if (!RetrieverFactory.companionUnavailableNoticeShown) {
+        RetrieverFactory.companionUnavailableNoticeShown = true;
+        new Notice("Vector companion is unavailable. Falling back to local search.");
+      }
+      logWarn("RetrieverFactory: Companion backend unavailable, falling back");
+    }
 
     // Miyo-backed semantic search (self-host mode + Miyo enabled)
     if (RetrieverFactory.shouldUseMiyo(currentSettings)) {
@@ -242,6 +282,15 @@ export class RetrieverFactory {
     app: App,
     options: RetrieverOptions
   ): MergedSemanticRetriever | MiyoSemanticRetriever {
+    if (getSettings().enableVectorCompanion) {
+      const companionBackend = companionRegistry.get();
+      if (companionBackend) {
+        const normalizedOptions = normalizeOptions(options);
+        const semanticRetriever = new SelfHostRetriever(app, companionBackend, normalizedOptions);
+        return new MergedSemanticRetriever(app, normalizedOptions, semanticRetriever);
+      }
+    }
+
     if (RetrieverFactory.shouldUseMiyo(getSettings())) {
       return RetrieverFactory.createMiyoRetriever(app, options);
     }
@@ -289,8 +338,12 @@ export class RetrieverFactory {
    */
   static getRetrieverType(
     settings?: Partial<CopilotSettings>
-  ): "self_hosted" | "semantic" | "lexical" {
+  ): "self_hosted" | "semantic" | "lexical" | "companion" {
     const currentSettings = settings ? { ...getSettings(), ...settings } : getSettings();
+
+    if (currentSettings.enableVectorCompanion) {
+      return "companion";
+    }
 
     if (RetrieverFactory.shouldUseMiyo(currentSettings)) {
       return "semantic";

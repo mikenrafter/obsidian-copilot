@@ -1,3 +1,4 @@
+/* eslint-disable obsidianmd/hardcoded-config-path */
 import {
   isUnsafeSemanticIndexFolder,
   normalizeSemanticIndexFolder,

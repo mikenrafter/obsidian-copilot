@@ -1,5 +1,6 @@
 /**
- * Phase 0 HTTP server: /health and /vaults/:id/search on 127.0.0.1.
+ * Phase 1 HTTP server for companion health, vault registration, scan jobs,
+ * stats, index management, and vector search.
  *
  * Uses node:http directly to avoid pulling express into the spike. All
  * responses are JSON. Optional bearer-token auth.
@@ -7,11 +8,22 @@
 import * as http from "node:http";
 
 import { loadConfig, type CompanionConfig } from "./config.js";
-import { embed } from "./index/embedder.js";
+import { embedQuery } from "./index/embedder.js";
 import { VectorStore } from "./index/store.js";
-import type { HealthResponse, SearchRequest, VectorSearchResult } from "./protocol/types.js";
+import type {
+  HealthResponse,
+  IndexedFilesResponse,
+  RegisterVaultRequest,
+  ScanRequest,
+  ScanStartResponse,
+  ScanStatusResponse,
+  SearchRequest,
+  VectorSearchResult,
+  VaultStatsResponse,
+} from "./protocol/types.js";
+import { VaultScanner, validateVaultRootPath } from "./vault/scanner.js";
 
-const SPIKE_VERSION = "0.0.1-phase0";
+const COMPANION_VERSION = "0.1.0-phase1";
 const MAX_BODY_BYTES = 64 * 1024; // 64 KiB; queries are tiny in the spike.
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
@@ -72,9 +84,7 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
-function toSearchResult(
-  hit: ReturnType<VectorStore["search"]>[number]
-): VectorSearchResult {
+function toSearchResult(hit: ReturnType<VectorStore["search"]>[number]): VectorSearchResult {
   return {
     id: hit.id,
     score: hit.score,
@@ -94,7 +104,66 @@ function parseVaultId(pathname: string): string | null {
   return match ? decodeURIComponent(match[1]!) : null;
 }
 
+/**
+ * Parse /vaults/:id/index path.
+ */
+function parseVaultIndexPath(pathname: string): string | null {
+  const match = pathname.match(/^\/vaults\/([^/]+)\/index\/?$/);
+  return match ? decodeURIComponent(match[1]!) : null;
+}
+
+/**
+ * Parse /vaults/:id/stats path.
+ */
+function parseVaultStatsPath(pathname: string): string | null {
+  const match = pathname.match(/^\/vaults\/([^/]+)\/stats\/?$/);
+  return match ? decodeURIComponent(match[1]!) : null;
+}
+
+/**
+ * Parse /vaults/:id/indexed-files path.
+ */
+function parseVaultIndexedFilesPath(pathname: string): string | null {
+  const match = pathname.match(/^\/vaults\/([^/]+)\/indexed-files\/?$/);
+  return match ? decodeURIComponent(match[1]!) : null;
+}
+
+/**
+ * Parse /vaults/:id/scan path.
+ */
+function parseVaultScanPath(pathname: string): string | null {
+  const match = pathname.match(/^\/vaults\/([^/]+)\/scan\/?$/);
+  return match ? decodeURIComponent(match[1]!) : null;
+}
+
+/**
+ * Parse /vaults/:id/scan/:jobId path.
+ */
+function parseVaultScanStatusPath(pathname: string): { vaultId: string; jobId: string } | null {
+  const match = pathname.match(/^\/vaults\/([^/]+)\/scan\/([^/]+)\/?$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    vaultId: decodeURIComponent(match[1]!),
+    jobId: decodeURIComponent(match[2]!),
+  };
+}
+
+/**
+ * Normalize model ids so stored vault metadata always includes provider prefix.
+ */
+function normalizeEmbeddingModelId(rawModel: string, cfg: CompanionConfig): string {
+  const trimmed = rawModel.trim();
+  if (trimmed.startsWith("openai:") || trimmed.startsWith("ollama:")) {
+    return trimmed;
+  }
+  return `${cfg.defaultEmbeddingProvider}:${trimmed}`;
+}
+
 function buildServer(cfg: CompanionConfig, store: VectorStore): http.Server {
+  const scanner = new VaultScanner(store, cfg);
+
   return http.createServer(async (req, res) => {
     try {
       const method = req.method ?? "GET";
@@ -105,8 +174,8 @@ function buildServer(cfg: CompanionConfig, store: VectorStore): http.Server {
         // before the user has entered their token.
         const body: HealthResponse = {
           status: "ok",
-          version: SPIKE_VERSION,
-          embeddingDimension: cfg.dim,
+          version: COMPANION_VERSION,
+          embeddingDimension: null,
           indexedChunks: store.count(),
         };
         sendJson(res, 200, body);
@@ -118,9 +187,78 @@ function buildServer(cfg: CompanionConfig, store: VectorStore): http.Server {
         return;
       }
 
+      if (method === "POST" && url.pathname === "/vaults/register") {
+        let body: RegisterVaultRequest;
+        try {
+          body = (await readJsonBody(req)) as RegisterVaultRequest;
+        } catch (e) {
+          sendJson(res, 400, { error: `invalid body: ${(e as Error).message}` });
+          return;
+        }
+
+        if (!body || typeof body.vaultId !== "string" || body.vaultId.trim().length === 0) {
+          sendJson(res, 400, { error: "vaultId is required" });
+          return;
+        }
+        if (!body.rootPath || typeof body.rootPath !== "string") {
+          sendJson(res, 400, { error: "rootPath is required" });
+          return;
+        }
+
+        const embeddingModel = normalizeEmbeddingModelId(
+          typeof body.embeddingModel === "string" && body.embeddingModel.trim().length > 0
+            ? body.embeddingModel
+            : cfg.defaultEmbeddingModel,
+          cfg
+        );
+
+        try {
+          await validateVaultRootPath(body.rootPath);
+        } catch (error) {
+          sendJson(res, 400, { error: (error as Error).message });
+          return;
+        }
+
+        const existing = store.getVault(body.vaultId);
+        if (
+          existing &&
+          existing.embeddingModel !== embeddingModel &&
+          existing.embeddingDimension !== null &&
+          !body.force
+        ) {
+          sendJson(res, 409, {
+            error: "embedding model mismatch; resend register with force=true to clear and rebuild",
+            currentModel: existing.embeddingModel,
+            requestedModel: embeddingModel,
+          });
+          return;
+        }
+
+        store.registerVault({
+          vaultId: body.vaultId,
+          rootPath: body.rootPath,
+          inclusions: Array.isArray(body.inclusions) ? body.inclusions : [],
+          exclusions: Array.isArray(body.exclusions) ? body.exclusions : [],
+          embeddingModel,
+        });
+
+        if (existing && existing.embeddingModel !== embeddingModel && body.force) {
+          store.resetVaultEmbeddings(body.vaultId, embeddingModel);
+        }
+
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
       if (method === "POST") {
         const vaultId = parseVaultId(url.pathname);
         if (vaultId) {
+          const vault = store.getVault(vaultId);
+          if (!vault) {
+            sendJson(res, 404, { error: `vault ${vaultId} is not registered` });
+            return;
+          }
+
           let body: SearchRequest;
           try {
             body = (await readJsonBody(req)) as SearchRequest;
@@ -132,17 +270,99 @@ function buildServer(cfg: CompanionConfig, store: VectorStore): http.Server {
             sendJson(res, 400, { error: "`query` is required" });
             return;
           }
-          const limit = Math.max(
-            1,
-            Math.min(MAX_LIMIT, Math.floor(body.limit ?? DEFAULT_LIMIT))
-          );
+          const limit = Math.max(1, Math.min(MAX_LIMIT, Math.floor(body.limit ?? DEFAULT_LIMIT)));
           const minScore = typeof body.minScore === "number" ? body.minScore : 0;
-          const queryVec = embed(body.query, cfg.dim);
+          const embedded = await embedQuery(body.query, vault.embeddingModel, cfg);
+          if (
+            vault.embeddingDimension !== null &&
+            embedded.dimension !== vault.embeddingDimension
+          ) {
+            sendJson(res, 409, {
+              error: "query embedding dimension mismatch; trigger a full scan to rebuild",
+              expected: vault.embeddingDimension,
+              actual: embedded.dimension,
+            });
+            return;
+          }
+
           const hits = store
-            .search(vaultId, queryVec, limit)
+            .search(vaultId, embedded.vectors[0]!, limit)
             .filter((h) => h.score >= minScore)
             .map(toSearchResult);
           sendJson(res, 200, hits);
+          return;
+        }
+
+        const scanVaultId = parseVaultScanPath(url.pathname);
+        if (scanVaultId) {
+          if (!store.getVault(scanVaultId)) {
+            sendJson(res, 404, { error: `vault ${scanVaultId} is not registered` });
+            return;
+          }
+
+          let body: ScanRequest | null = null;
+          try {
+            body = (await readJsonBody(req)) as ScanRequest | null;
+          } catch (e) {
+            sendJson(res, 400, { error: `invalid body: ${(e as Error).message}` });
+            return;
+          }
+          const full = Boolean(body?.full);
+          const response: ScanStartResponse = {
+            jobId: scanner.startScan(scanVaultId, full),
+          };
+          sendJson(res, 200, response);
+          return;
+        }
+      }
+
+      if (method === "GET") {
+        const statsVaultId = parseVaultStatsPath(url.pathname);
+        if (statsVaultId) {
+          if (!store.getVault(statsVaultId)) {
+            sendJson(res, 404, { error: `vault ${statsVaultId} is not registered` });
+            return;
+          }
+          const stats: VaultStatsResponse = store.getVaultStats(statsVaultId);
+          sendJson(res, 200, stats);
+          return;
+        }
+
+        const filesVaultId = parseVaultIndexedFilesPath(url.pathname);
+        if (filesVaultId) {
+          if (!store.getVault(filesVaultId)) {
+            sendJson(res, 404, { error: `vault ${filesVaultId} is not registered` });
+            return;
+          }
+          const files: IndexedFilesResponse = {
+            files: store.getIndexedFiles(filesVaultId),
+          };
+          sendJson(res, 200, files);
+          return;
+        }
+
+        const scanStatus = parseVaultScanStatusPath(url.pathname);
+        if (scanStatus) {
+          const status = scanner.getJobStatus(scanStatus.vaultId, scanStatus.jobId);
+          if (!status) {
+            sendJson(res, 404, { error: "scan job not found" });
+            return;
+          }
+          const response: ScanStatusResponse = status;
+          sendJson(res, 200, response);
+          return;
+        }
+      }
+
+      if (method === "DELETE") {
+        const vaultId = parseVaultIndexPath(url.pathname);
+        if (vaultId) {
+          if (!store.getVault(vaultId)) {
+            sendJson(res, 404, { error: `vault ${vaultId} is not registered` });
+            return;
+          }
+          store.clearVaultIndex(vaultId);
+          sendJson(res, 200, { ok: true });
           return;
         }
       }
@@ -158,14 +378,14 @@ function buildServer(cfg: CompanionConfig, store: VectorStore): http.Server {
 
 function main(): void {
   const cfg = loadConfig();
-  const store = new VectorStore(cfg.dbPath, cfg.dim);
+  const store = new VectorStore(cfg.dbPath);
   const server = buildServer(cfg, store);
 
   server.listen(cfg.port, cfg.host, () => {
     // eslint-disable-next-line no-console
     console.log(
       `companion: listening on http://${cfg.host}:${cfg.port} ` +
-        `(dim=${cfg.dim}, chunks=${store.count()}, auth=${cfg.token ? "on" : "off"})`
+        `(provider=${cfg.defaultEmbeddingProvider}, chunks=${store.count()}, auth=${cfg.token ? "on" : "off"})`
     );
   });
 

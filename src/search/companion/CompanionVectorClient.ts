@@ -1,8 +1,5 @@
 import { logError, logInfo, logWarn } from "@/logger";
-import {
-  VectorSearchBackend,
-  VectorSearchResult,
-} from "@/search/selfHostRetriever";
+import { VectorSearchBackend, VectorSearchResult } from "@/search/selfHostRetriever";
 import { safeFetch } from "@/utils";
 
 /**
@@ -27,8 +24,40 @@ export interface CompanionClientConfig {
 export interface CompanionHealth {
   status: "ok";
   version: string;
-  embeddingDimension: number;
+  embeddingDimension: number | null;
   indexedChunks: number;
+}
+
+/** Registration payload for companion vault registration endpoint. */
+export interface CompanionRegisterPayload {
+  vaultId: string;
+  rootPath: string;
+  inclusions?: string[];
+  exclusions?: string[];
+  embeddingModel: string;
+  force?: boolean;
+}
+
+/** Response payload for companion scan status endpoint. */
+export interface CompanionScanStatus {
+  jobId: string;
+  vaultId: string;
+  state: "queued" | "running" | "done" | "error";
+  indexed: number;
+  total: number;
+  errors: string[];
+  startedAt: number;
+  updatedAt: number;
+}
+
+/** Response payload for companion stats endpoint. */
+export interface CompanionStats {
+  indexedFiles: number;
+  indexedChunks: number;
+  latestFileMtime: number;
+  embeddingModel: string;
+  dimension: number | null;
+  lastScanAt: number | null;
 }
 
 /**
@@ -122,6 +151,74 @@ export class CompanionVectorClient implements VectorSearchBackend {
     return this.cachedDim ?? CompanionVectorClient.DEFAULT_DIM;
   }
 
+  /**
+   * Register or update vault settings on the companion.
+   */
+  async registerVault(payload: CompanionRegisterPayload): Promise<boolean> {
+    const response = await this.request<{ ok?: boolean }>(`/vaults/register`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return Boolean(response?.ok);
+  }
+
+  /**
+   * Trigger an asynchronous scan and return the job id.
+   */
+  async startScan(full: boolean): Promise<string | null> {
+    const vaultId = encodeURIComponent(this.config.vaultId || "default");
+    const response = await this.request<{ jobId?: string }>(`/vaults/${vaultId}/scan`, {
+      method: "POST",
+      body: JSON.stringify({ full }),
+    });
+    return typeof response?.jobId === "string" ? response.jobId : null;
+  }
+
+  /**
+   * Fetch progress for an existing scan job.
+   */
+  async getScanStatus(jobId: string): Promise<CompanionScanStatus | null> {
+    const vaultId = encodeURIComponent(this.config.vaultId || "default");
+    return this.request<CompanionScanStatus>(
+      `/vaults/${vaultId}/scan/${encodeURIComponent(jobId)}`,
+      {
+        method: "GET",
+      }
+    );
+  }
+
+  /**
+   * Clear all indexed vectors for the configured vault.
+   */
+  async clearVaultIndex(): Promise<boolean> {
+    const vaultId = encodeURIComponent(this.config.vaultId || "default");
+    const response = await this.request<{ ok?: boolean }>(`/vaults/${vaultId}/index`, {
+      method: "DELETE",
+    });
+    return Boolean(response?.ok);
+  }
+
+  /**
+   * Return aggregate index stats for the configured vault.
+   */
+  async getStats(): Promise<CompanionStats | null> {
+    const vaultId = encodeURIComponent(this.config.vaultId || "default");
+    return this.request<CompanionStats>(`/vaults/${vaultId}/stats`, {
+      method: "GET",
+    });
+  }
+
+  /**
+   * Return all indexed file paths for the configured vault.
+   */
+  async getIndexedFiles(): Promise<string[]> {
+    const vaultId = encodeURIComponent(this.config.vaultId || "default");
+    const response = await this.request<{ files?: string[] }>(`/vaults/${vaultId}/indexed-files`, {
+      method: "GET",
+    });
+    return Array.isArray(response?.files) ? response.files : [];
+  }
+
   async search(
     query: string,
     options: { limit: number; minScore?: number; filter?: Record<string, unknown> }
@@ -159,17 +256,10 @@ export class CompanionVectorClient implements VectorSearchBackend {
   }): Promise<VectorSearchResult[]> {
     const vaultId = encodeURIComponent(this.config.vaultId || "default");
     try {
-      const res = await safeFetch(`${this.baseUrl()}/vaults/${vaultId}/search`, {
+      const data = await this.request<VectorSearchResult[]>(`/vaults/${vaultId}/search`, {
         method: "POST",
-        headers: this.headers(),
         body: JSON.stringify(body),
-        throwOnHttpError: false,
       });
-      if (!res.ok) {
-        logWarn(`CompanionVectorClient: search HTTP ${res.status}`);
-        return [];
-      }
-      const data = (await res.json()) as VectorSearchResult[];
       if (!Array.isArray(data)) {
         logWarn("CompanionVectorClient: search returned non-array payload");
         return [];
@@ -179,6 +269,31 @@ export class CompanionVectorClient implements VectorSearchBackend {
     } catch (err) {
       logError("CompanionVectorClient: search failed", err);
       return [];
+    }
+  }
+
+  /**
+   * Generic JSON request helper for companion endpoints.
+   */
+  private async request<T>(
+    path: string,
+    options: { method: "GET" | "POST" | "DELETE"; body?: string }
+  ): Promise<T | null> {
+    try {
+      const response = await safeFetch(`${this.baseUrl()}${path}`, {
+        method: options.method,
+        headers: this.headers(),
+        body: options.body,
+        throwOnHttpError: false,
+      });
+      if (!response.ok) {
+        logWarn(`CompanionVectorClient: ${options.method} ${path} HTTP ${response.status}`);
+        return null;
+      }
+      return (await response.json()) as T;
+    } catch (error) {
+      logWarn(`CompanionVectorClient: ${options.method} ${path} failed`, error);
+      return null;
     }
   }
 }

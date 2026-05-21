@@ -365,7 +365,7 @@ export const QASettings: React.FC = () => {
 };
 
 /**
- * Phase 0 settings panel for the localhost vector companion. Hidden behind
+ * Phase 1 settings panel for the localhost vector companion. Hidden behind
  * its own enable switch so it stays out of the way until users opt in.
  *
  * The "Test connection" button issues a one-off `/health` probe using the
@@ -388,9 +388,13 @@ const VectorCompanionSection: React.FC = () => {
         );
         return;
       }
+      const dimensionText =
+        typeof health.embeddingDimension === "number"
+          ? String(health.embeddingDimension)
+          : "unknown";
       new Notice(
         `Vector companion OK — version ${health.version}, ` +
-          `dim ${health.embeddingDimension}, ${health.indexedChunks} chunks indexed.`
+          `dim ${dimensionText}, ${health.indexedChunks} chunks indexed.`
       );
     } catch (err) {
       logError("VectorCompanionSection: test connection failed", err);
@@ -405,7 +409,7 @@ const VectorCompanionSection: React.FC = () => {
       <div className="tw-space-y-4">
         <SettingItem
           type="switch"
-          title="Enable Vector Companion (experimental, Phase 0)"
+          title="Enable Vector Companion (experimental, Phase 1)"
           description="Route semantic search to a localhost companion service that holds the vector index out-of-process. Requires the companion to be running. Lexical search is unaffected."
           checked={settings.enableVectorCompanion}
           onCheckedChange={(checked) => updateSetting("enableVectorCompanion", checked)}
@@ -452,7 +456,11 @@ const VectorCompanionSection: React.FC = () => {
           placeholder="default"
         />
 
-        <SettingItem type="custom" title="Test connection" description="Probes /health on the configured endpoint.">
+        <SettingItem
+          type="custom"
+          title="Test connection"
+          description="Probes /health on the configured endpoint."
+        >
           <Button onClick={handleTest} disabled={testing}>
             {testing ? "Testing…" : "Test connection"}
           </Button>

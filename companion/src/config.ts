@@ -5,13 +5,23 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+export type CompanionEmbeddingProvider = "openai" | "ollama";
+
 export interface CompanionConfig {
   host: string;
   port: number;
   token: string;
   dbPath: string;
-  /** Embedding dimension. Must match the seeded index. */
-  dim: number;
+  /** Default provider used when model id does not encode a provider prefix. */
+  defaultEmbeddingProvider: CompanionEmbeddingProvider;
+  /** Default model id used when register payload omits one. */
+  defaultEmbeddingModel: string;
+  /** OpenAI API key for provider="openai". */
+  openAIApiKey: string;
+  /** Optional OpenAI-compatible base URL for self-hosted endpoints. */
+  openAIBaseUrl: string;
+  /** Base URL for Ollama embedding requests. */
+  ollamaHost: string;
 }
 
 const DEFAULT_DB_DIR = path.resolve(process.cwd(), "data");
@@ -27,12 +37,34 @@ export function loadConfig(): CompanionConfig {
   if (!Number.isFinite(port) || port <= 0 || port > 65535) {
     throw new Error(`Invalid COMPANION_PORT: ${process.env.COMPANION_PORT}`);
   }
+
   const token = process.env.COMPANION_TOKEN?.trim() ?? "";
   const dbPath = process.env.COMPANION_DB?.trim() || DEFAULT_DB_PATH;
-  const dim = Number.parseInt(process.env.COMPANION_DIM ?? "128", 10);
-  if (!Number.isFinite(dim) || dim < 8 || dim > 4096) {
-    throw new Error(`Invalid COMPANION_DIM: ${process.env.COMPANION_DIM}`);
+
+  const providerRaw = process.env.COMPANION_EMBEDDING_PROVIDER?.trim().toLowerCase() || "openai";
+  if (providerRaw !== "openai" && providerRaw !== "ollama") {
+    throw new Error(
+      `Invalid COMPANION_EMBEDDING_PROVIDER: ${process.env.COMPANION_EMBEDDING_PROVIDER}`
+    );
   }
+
+  const defaultEmbeddingModel =
+    process.env.COMPANION_EMBEDDING_MODEL?.trim() ||
+    (providerRaw === "openai" ? "text-embedding-3-small" : "nomic-embed-text");
+  const openAIApiKey = process.env.OPENAI_API_KEY?.trim() || "";
+  const openAIBaseUrl = process.env.OPENAI_BASE_URL?.trim() || "https://api.openai.com";
+  const ollamaHost = process.env.OLLAMA_HOST?.trim() || "http://127.0.0.1:11434";
+
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  return { host, port, token, dbPath, dim };
+  return {
+    host,
+    port,
+    token,
+    dbPath,
+    defaultEmbeddingProvider: providerRaw,
+    defaultEmbeddingModel,
+    openAIApiKey,
+    openAIBaseUrl,
+    ollamaHost,
+  };
 }

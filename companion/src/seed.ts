@@ -5,7 +5,6 @@
  * Usage: `npm run seed`
  */
 import { loadConfig } from "./config.js";
-import { embed } from "./index/embedder.js";
 import { VectorStore } from "./index/store.js";
 
 interface Doc {
@@ -62,8 +61,20 @@ const DEMO_DOCS: Doc[] = [
 
 function main(): void {
   const cfg = loadConfig();
-  const store = new VectorStore(cfg.dbPath, cfg.dim);
+  const store = new VectorStore(cfg.dbPath);
   const now = Date.now();
+
+  store.registerVault({
+    vaultId: VAULT_ID,
+    rootPath: process.cwd(),
+    inclusions: [],
+    exclusions: [],
+    embeddingModel: "seed:deterministic",
+  });
+
+  const dim = Number.parseInt(process.env.COMPANION_DIM ?? "128", 10);
+  store.ensureVaultEmbeddingCompatibility(VAULT_ID, "seed:deterministic", dim, true);
+
   for (const doc of DEMO_DOCS) {
     const id = `${doc.path}#${doc.chunkIndex}`;
     store.upsert(
@@ -76,12 +87,41 @@ function main(): void {
         title: doc.title,
         mtime: now,
       },
-      embed(doc.content, cfg.dim)
+      embedDeterministic(doc.content, dim)
     );
   }
+  store.touchVaultScan(VAULT_ID);
   // eslint-disable-next-line no-console
-  console.log(`seeded ${DEMO_DOCS.length} chunks into ${cfg.dbPath} (dim=${cfg.dim})`);
+  console.log(`seeded ${DEMO_DOCS.length} chunks into ${cfg.dbPath} (dim=${dim})`);
   store.close();
+}
+
+/**
+ * Deterministic toy embedder used by the seed helper only.
+ */
+function embedDeterministic(text: string, dim: number): Float32Array {
+  const vec = new Float32Array(dim);
+  const tokens = text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  for (const token of tokens) {
+    let hash = 2166136261;
+    for (let i = 0; i < token.length; i++) {
+      hash ^= token.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    const index = Math.abs(hash) % dim;
+    vec[index] = (vec[index] as number) + 1;
+  }
+  let norm = 0;
+  for (let i = 0; i < dim; i++) {
+    norm += (vec[i] as number) * (vec[i] as number);
+  }
+  norm = Math.sqrt(norm);
+  if (norm > 0) {
+    for (let i = 0; i < dim; i++) {
+      vec[i] = (vec[i] as number) / norm;
+    }
+  }
+  return vec;
 }
 
 main();

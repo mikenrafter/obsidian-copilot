@@ -8,6 +8,7 @@ import { shouldUseMiyo } from "@/miyo/miyoUtils";
 import { CopilotSettings, getSettings, subscribeToSettingsChange } from "@/settings/model";
 import { Orama } from "@orama/orama";
 import { Notice, Platform, TFile } from "obsidian";
+import { CompanionIndexBackend } from "./companion/CompanionIndexBackend";
 import { MiyoIndexBackend } from "./indexBackend/MiyoIndexBackend";
 import { OramaIndexBackend } from "./indexBackend/OramaIndexBackend";
 import type {
@@ -28,14 +29,16 @@ export default class VectorStoreManager {
   private indexBackend: SemanticIndexBackend;
   private oramaBackend: OramaIndexBackend;
   private miyoBackend: MiyoIndexBackend;
-  private activeBackendKey: "orama" | "miyo";
+  private companionBackend: CompanionIndexBackend;
+  private activeBackendKey: "orama" | "miyo" | "companion";
 
   private constructor() {
     this.embeddingsManager = EmbeddingsManager.getInstance();
     this.oramaBackend = new OramaIndexBackend(app);
     this.miyoBackend = new MiyoIndexBackend(app);
+    this.companionBackend = new CompanionIndexBackend(app);
     this.activeBackendKey = this.getBackendKey(getSettings());
-    this.indexBackend = this.activeBackendKey === "miyo" ? this.miyoBackend : this.oramaBackend;
+    this.indexBackend = this.resolveBackend(this.activeBackendKey);
     this.indexOps = new IndexOperations(app, this.indexBackend, this.embeddingsManager);
     this.eventHandler = new IndexEventHandler(app, this.indexOps, this.indexBackend);
 
@@ -137,6 +140,12 @@ export default class VectorStoreManager {
       return 0;
     }
 
+    if (this.activeBackendKey === "companion") {
+      const indexedCount = await this.companionBackend.requestIndexRefresh(Boolean(overwrite));
+      notifyIndexChanged();
+      return indexedCount;
+    }
+
     if (
       Platform.isMobile &&
       getSettings().disableIndexOnMobile &&
@@ -227,8 +236,24 @@ export default class VectorStoreManager {
    * @param settings - Copilot settings to evaluate.
    * @returns Backend key string.
    */
-  private getBackendKey(settings: CopilotSettings): "orama" | "miyo" {
+  private getBackendKey(settings: CopilotSettings): "orama" | "miyo" | "companion" {
+    if (settings.enableVectorCompanion) {
+      return "companion";
+    }
     return this.shouldUseMiyo(settings) ? "miyo" : "orama";
+  }
+
+  /**
+   * Resolve backend implementation by key.
+   */
+  private resolveBackend(key: "orama" | "miyo" | "companion"): SemanticIndexBackend {
+    if (key === "miyo") {
+      return this.miyoBackend;
+    }
+    if (key === "companion") {
+      return this.companionBackend;
+    }
+    return this.oramaBackend;
   }
 
   /**
@@ -247,7 +272,7 @@ export default class VectorStoreManager {
     }
 
     this.activeBackendKey = nextBackendKey;
-    this.indexBackend = nextBackendKey === "miyo" ? this.miyoBackend : this.oramaBackend;
+    this.indexBackend = this.resolveBackend(nextBackendKey);
     this.indexOps = new IndexOperations(app, this.indexBackend, this.embeddingsManager);
     this.eventHandler.cleanup();
     this.eventHandler = new IndexEventHandler(app, this.indexOps, this.indexBackend);
@@ -263,12 +288,13 @@ export default class VectorStoreManager {
       await this.indexBackend.initialize(embeddingAPI);
     }
 
-    if (
-      prevSettings &&
-      settings.enableSemanticSearchV3 &&
-      settings.enableMiyo !== prevSettings.enableMiyo
-    ) {
-      logInfo("VectorStoreManager: Miyo backend toggled; reindex recommended.");
+    if (prevSettings && settings.enableSemanticSearchV3) {
+      if (settings.enableMiyo !== prevSettings.enableMiyo) {
+        logInfo("VectorStoreManager: Miyo backend toggled; reindex recommended.");
+      }
+      if (settings.enableVectorCompanion !== prevSettings.enableVectorCompanion) {
+        logInfo("VectorStoreManager: Companion backend toggled; reindex recommended.");
+      }
     }
   }
 
@@ -289,7 +315,7 @@ export default class VectorStoreManager {
 
   public async reindexFile(file: TFile): Promise<void> {
     await this.waitForInitialization();
-    if (this.activeBackendKey === "miyo") {
+    if (this.activeBackendKey === "miyo" || this.activeBackendKey === "companion") {
       return;
     }
     await this.indexOps.reindexFile(file);

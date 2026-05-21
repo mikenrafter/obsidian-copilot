@@ -38,10 +38,58 @@ export interface SearchRequest {
 /** Body of `GET /health`. */
 export interface HealthResponse {
   status: "ok";
-  /** Spike build identifier; bumped when the wire format changes. */
+  /** Companion build identifier; bumped when the wire format changes. */
   version: string;
-  /** Dimension of the embedding vectors stored in the index. */
-  embeddingDimension: number;
-  /** Total rows in the seeded index, across all vaults. */
+  /** Default companion embedding dimension when known; null before first scan. */
+  embeddingDimension: number | null;
+  /** Total indexed chunks across all registered vaults. */
   indexedChunks: number;
+}
+
+/** Body of `POST /vaults/register`. */
+export interface RegisterVaultRequest {
+  vaultId: string;
+  rootPath: string;
+  inclusions?: string[];
+  exclusions?: string[];
+  embeddingModel: string;
+  /** Force model migration by clearing existing vectors if model changed. */
+  force?: boolean;
+}
+
+/** Body of `POST /vaults/:id/scan`. */
+export interface ScanRequest {
+  full?: boolean;
+}
+
+/** Response payload of `POST /vaults/:id/scan`. */
+export interface ScanStartResponse {
+  jobId: string;
+}
+
+/** Response payload of `GET /vaults/:id/scan/:jobId`. */
+export interface ScanStatusResponse {
+  jobId: string;
+  vaultId: string;
+  state: "queued" | "running" | "done" | "error";
+  indexed: number;
+  total: number;
+  errors: string[];
+  startedAt: number;
+  updatedAt: number;
+}
+
+/** Response payload of `GET /vaults/:id/stats`. */
+export interface VaultStatsResponse {
+  indexedFiles: number;
+  indexedChunks: number;
+  latestFileMtime: number;
+  embeddingModel: string;
+  dimension: number | null;
+  lastScanAt: number | null;
+}
+
+/** Response payload of `GET /vaults/:id/indexed-files`. */
+export interface IndexedFilesResponse {
+  files: string[];
 }
