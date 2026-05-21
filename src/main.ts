@@ -39,6 +39,7 @@ import {
 } from "@/services/webViewerService/webViewerServiceSingleton";
 import { WebSelectionTracker } from "@/services/webViewerService/webViewerServiceSelection";
 import VectorStoreManager from "@/search/vectorStoreManager";
+import { companionRegistry } from "@/search/companion/companionRegistry";
 import { CopilotSettingTab } from "@/settings/SettingsPage";
 import {
   getModelKeyFromModel,
@@ -133,6 +134,7 @@ export default class CopilotPlugin extends Plugin {
           new Notice("Copilot failed to save settings. Check logs and try again.");
         }
         registerCommands(this, prev, next);
+        companionRegistry.applySettings(next);
       })();
     });
     this.addSettingTab(new CopilotSettingTab(this.app, this));
@@ -153,6 +155,10 @@ export default class CopilotPlugin extends Plugin {
 
     // Always construct VectorStoreManager; it internally no-ops when semantic search is disabled
     this.vectorStoreManager = VectorStoreManager.getInstance();
+
+    // Phase 0: register the localhost vector companion backend if enabled.
+    // Safe to call unconditionally; it no-ops when the feature flag is off.
+    companionRegistry.applySettings(getSettings());
 
     // Initialize VaultDataManager for centralized vault data (notes, folders, tags)
     // Note: VaultDataManager tracks ALL data; hooks filter based on parameters

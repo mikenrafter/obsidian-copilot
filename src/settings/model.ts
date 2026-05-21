@@ -147,6 +147,20 @@ export interface CopilotSettings {
   selfHostUrl: string;
   /** API key for the self-host mode backend (if required) */
   selfHostApiKey: string;
+  /**
+   * Phase 0 spike: route the semantic leg of vault search to a localhost
+   * vector companion service (see `companion/` in this repo). When false,
+   * the existing Orama / Miyo path is used unchanged.
+   */
+  enableVectorCompanion: boolean;
+  /** Host/IP of the companion service. Keep loopback unless you know better. */
+  vectorCompanionHost: string;
+  /** TCP port the companion is listening on. */
+  vectorCompanionPort: number;
+  /** Optional shared-secret bearer token; empty disables auth. */
+  vectorCompanionToken: string;
+  /** Logical vault id sent to the companion (defaults to "default"). */
+  vectorCompanionVaultId: string;
   /** Custom Miyo server URL, e.g. "http://192.168.1.10:8742" (empty = use local service discovery) */
   miyoServerUrl: string;
   /** Which provider to use for self-host web search */

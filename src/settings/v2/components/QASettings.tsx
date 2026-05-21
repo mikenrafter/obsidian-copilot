@@ -8,8 +8,12 @@ import { useApp } from "@/context";
 import { HelpTooltip } from "@/components/ui/help-tooltip";
 import { getModelDisplayWithIcons } from "@/components/ui/model-display";
 import { SettingItem } from "@/components/ui/setting-item";
+import { Button } from "@/components/ui/button";
 import { VAULT_VECTOR_STORE_STRATEGIES } from "@/constants";
 import { DEFAULT_SEMANTIC_INDEX_FOLDER } from "@/constants";
+import { logError } from "@/logger";
+import { CompanionVectorClient } from "@/search/companion/CompanionVectorClient";
+import { buildClientConfig } from "@/search/companion/companionRegistry";
 import { getModelKeyFromModel, updateSetting, useSettingsValue } from "@/settings/model";
 import { PatternListEditor } from "@/settings/v2/components/PatternListEditor";
 
@@ -354,6 +358,106 @@ export const QASettings: React.FC = () => {
           />
         </div>
       </section>
+
+      <VectorCompanionSection />
     </div>
+  );
+};
+
+/**
+ * Phase 0 settings panel for the localhost vector companion. Hidden behind
+ * its own enable switch so it stays out of the way until users opt in.
+ *
+ * The "Test connection" button issues a one-off `/health` probe using the
+ * current (possibly unsaved) form values, so users get feedback without
+ * having to toggle the feature on first.
+ */
+const VectorCompanionSection: React.FC = () => {
+  const settings = useSettingsValue();
+  const [testing, setTesting] = React.useState(false);
+
+  const handleTest = async () => {
+    setTesting(true);
+    try {
+      const client = new CompanionVectorClient(buildClientConfig(settings));
+      const health = await client.health();
+      if (!health) {
+        new Notice(
+          "Vector companion: connection failed. " +
+            "Check that the service is running and the host/port/token match."
+        );
+        return;
+      }
+      new Notice(
+        `Vector companion OK — version ${health.version}, ` +
+          `dim ${health.embeddingDimension}, ${health.indexedChunks} chunks indexed.`
+      );
+    } catch (err) {
+      logError("VectorCompanionSection: test connection failed", err);
+      new Notice(`Vector companion: ${(err as Error).message}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <section>
+      <div className="tw-space-y-4">
+        <SettingItem
+          type="switch"
+          title="Enable Vector Companion (experimental, Phase 0)"
+          description="Route semantic search to a localhost companion service that holds the vector index out-of-process. Requires the companion to be running. Lexical search is unaffected."
+          checked={settings.enableVectorCompanion}
+          onCheckedChange={(checked) => updateSetting("enableVectorCompanion", checked)}
+        />
+
+        <SettingItem
+          type="text"
+          title="Companion host"
+          description="Loopback recommended. The companion binds 127.0.0.1 by default."
+          value={settings.vectorCompanionHost}
+          onChange={(value) => updateSetting("vectorCompanionHost", value.trim() || "127.0.0.1")}
+          placeholder="127.0.0.1"
+        />
+
+        <SettingItem
+          type="number"
+          title="Companion port"
+          description="TCP port the companion is listening on (default 7261)."
+          value={settings.vectorCompanionPort}
+          onChange={(value) => {
+            const port = Number.parseInt(value, 10);
+            if (Number.isFinite(port) && port > 0 && port <= 65535) {
+              updateSetting("vectorCompanionPort", port);
+            }
+          }}
+          placeholder="7261"
+        />
+
+        <SettingItem
+          type="password"
+          title="Companion token"
+          description="Optional shared-secret bearer token. Leave empty if the companion was started without COMPANION_TOKEN."
+          value={settings.vectorCompanionToken}
+          onChange={(value) => updateSetting("vectorCompanionToken", value)}
+          placeholder="(none)"
+        />
+
+        <SettingItem
+          type="text"
+          title="Vault id"
+          description="Logical vault identifier sent to the companion. Defaults to 'default'."
+          value={settings.vectorCompanionVaultId}
+          onChange={(value) => updateSetting("vectorCompanionVaultId", value.trim() || "default")}
+          placeholder="default"
+        />
+
+        <SettingItem type="custom" title="Test connection" description="Probes /health on the configured endpoint.">
+          <Button onClick={handleTest} disabled={testing}>
+            {testing ? "Testing…" : "Test connection"}
+          </Button>
+        </SettingItem>
+      </div>
+    </section>
   );
 };

@@ -3,7 +3,7 @@
 todos:
   - id: "phase0-spike"
     content: "Spike: companion HTTP health/search + plugin CompanionVectorClient + QA connection test"
-    status: pending
+    status: completed
   - id: "protocol-types"
     content: "Define shared protocol types (register, scan, search, stats) in companion/protocol"
     status: pending
@@ -15,7 +15,7 @@ todos:
     status: pending
   - id: "settings-ux"
     content: "Add enableVectorCompanion + host/port settings and health UI in QASettings"
-    status: pending
+    status: completed
   - id: "phase2-watch"
     content: "Add chokidar watcher, incremental index, scan job progress API"
     status: pending
@@ -172,22 +172,108 @@ When enabled: disable Orama indexing UI paths that imply local embed work; show 
 
 ## Phased delivery
 
-### Phase 0 — Spike (3–5 days)
-- Companion `health` + `search` on a pre-built tiny index
-- Plugin `CompanionVectorClient` + manual “test connection” in QA settings
-- Confirm `requestUrl` to `127.0.0.1` works on your OS
+### Phase 0 — Spike (DONE)
+
+Implemented end-to-end on Linux against `127.0.0.1:7261`.
+
+**Companion package** ([`companion/`](companion/)):
+- `companion/src/server.ts` — `node:http` server, `GET /health` (unauthenticated) and `POST /vaults/:id/search` (bearer-token-gated when `COMPANION_TOKEN` is set). 64 KiB body cap. Binds loopback by default.
+- `companion/src/index/store.ts` — `better-sqlite3` + `sqlite-vec` (`vec0` virtual table). Schema: `chunks(rowid INTEGER PK AUTOINC, id UNIQUE, vault_id, path, chunk_index, content, title, mtime)` + `vec_chunks(embedding float[128])`. Upsert is an explicit "lookup-then-update-or-insert" because `vec_chunks` only accepts integer rowids — `RETURNING rowid` from an `ON CONFLICT` upsert bound as a non-integer and tripped `SqliteError: Only integers are allowed for primary key values on vec_chunks`. The fix is to maintain our own integer rowid and bind it as `BigInt`. Phase 1 must keep this invariant.
+- `companion/src/index/embedder.ts` — deterministic FNV-1a hash bag-of-words → L2-normed `Float32Array` of dim 128. Cosine-similarity-by-token-overlap, **not semantic**. Replaced in Phase 1; changing the hash function or dim requires re-seeding.
+- `companion/src/seed.ts` — hand-seeds 5 demo docs under `vault_id="default"`. Smoke test: `curl -X POST http://127.0.0.1:7261/vaults/default/search -d '{"query":"machine learning neural networks"}'` returns ranked ML chunks first.
+- `companion/src/protocol/types.ts` — `VectorSearchResult`, `SearchRequest`, `HealthResponse`. Shape-compatible with the plugin's `VectorSearchResult` in [`src/search/selfHostRetriever.ts`](src/search/selfHostRetriever.ts).
+
+**Plugin wiring:**
+- [`src/search/companion/CompanionVectorClient.ts`](src/search/companion/CompanionVectorClient.ts) — implements [`VectorSearchBackend`](src/search/selfHostRetriever.ts). Uses [`safeFetch`](src/utils.ts) (Obsidian `requestUrl` under the hood — CORS-free, no AbortSignal). `health()` caches the dimension. `searchByVector()` is a logged stub (companion embeds server-side).
+- [`src/search/companion/companionRegistry.ts`](src/search/companion/companionRegistry.ts) — module-level singleton that owns lifecycle: `applySettings(settings)` constructs/updates the client and toggles `RetrieverFactory.registerSelfHostedBackend()` / `clearSelfHostedBackend()`. Called from [`src/main.ts`](src/main.ts) on `onload` and inside the `subscribeToSettingsChange` callback.
+- New settings on `CopilotSettings` ([`src/settings/model.ts`](src/settings/model.ts)) with defaults in [`src/constants.ts`](src/constants.ts): `enableVectorCompanion=false`, `vectorCompanionHost="127.0.0.1"`, `vectorCompanionPort=7261`, `vectorCompanionToken=""`, `vectorCompanionVaultId="default"`. Sanitizer untouched — all fields have safe defaults.
+- New `VectorCompanionSection` in [`src/settings/v2/components/QASettings.tsx`](src/settings/v2/components/QASettings.tsx) with switch, host, port, token (PasswordInput), vault id, and a "Test connection" button that probes `/health` using current (possibly unsaved) form values via a one-off `CompanionVectorClient`.
+
+**Findings that change Phase 1:**
+
+| Finding | Source | Implication |
+|---|---|---|
+| `RetrieverFactory.registerSelfHostedBackend()` exists but is **never called** anywhere today. | `RetrieverFactory.ts:106-117` | Phase 0 registers it from `companionRegistry`. Phase 1 should add a dedicated `companion` priority arm in `RetrieverFactory.createRetriever()` so it doesn't ride on `isSelfHostModeValid()` / `selfHostUrl`, which gate the existing self-host path. |
+| `MergedSemanticRetriever` accepts a `semanticRetriever?` override in its constructor. | `MergedSemanticRetriever.ts:39-75` | Cleanest Phase 1 wiring: build a `SelfHostRetriever(companionClient)` and pass it as the semantic leg, leaving lexical (`TieredLexicalRetriever`) untouched. No need to disable v3. |
+| `IndexEventHandler.shouldHandleEvents()` already skips active-leaf reindex when `isRemoteBackend() && !requiresEmbeddings()`. | `indexEventHandler.ts:32-43` | Phase 1's `CompanionIndexBackend` should return `isRemoteBackend()=true`, `requiresEmbeddings()=false`. No new guard code needed. |
+| Mobile guard `Platform.isMobile && disableIndexOnMobile && !isRemoteBackend()` already exempts remote backends. | `vectorStoreManager.ts:143-148` | Same; nothing extra to add. |
+| Settings have **no version field**; `sanitizeSettings()` just merges over `DEFAULT_SETTINGS`. | `settings/model.ts:359-476` | Adding new fields is additive; no migration needed for any companion setting. |
+| `safeFetch` does **not** honor `AbortSignal` and buffers the full response. | `utils.ts:651-723` | Acceptable for sub-second JSON. Scan-progress streaming in Phase 2 cannot use `safeFetch`; either poll or fall back to native `fetch` (desktop only). |
+| Chunk ID format in v3 is `note_path#index` (0-based, non-padded). | `src/search/v3/chunks.ts:11,581` | Companion already follows this; Phase 1 must preserve it when porting the chunker so semantic + lexical results merge cleanly in `MergedSemanticRetriever`. |
+| Default chunk size is `CHUNK_SIZE = 6000` chars, heading-first markdown splitter, `overlap=0`. | `src/constants.ts:121` + `src/search/v3/chunks.ts:48-62` | Port these constants verbatim to companion's chunker. |
+| Pattern semantics live in `categorizePatterns()`: `#tag`, `*.ext`, `[[note]]`, else folder pattern. | `src/search/searchUtils.ts:166-185` | Phase 1 companion can either re-implement this client-side (preferred — port the regex) or accept already-categorized lists in the `register` payload. |
+| `sqlite-vec`'s `vec0` virtual table only accepts integer rowids and does not support filtering by non-vec columns inside `MATCH`. | empirical (Phase 0 SqliteError); sqlite-vec docs | We over-fetch `k*4` and filter by `vault_id` in SQL afterward. If multi-vault becomes a hot path (Phase 3), consider one `vec_chunks` per vault. |
+| Embedder is content-addressable: changing the embedding function invalidates every stored vector. | architectural | Companion needs an embedding-model identifier stored alongside vectors so Phase 1 can detect mismatches and trigger rebuilds. |
+
+- Confirmed: Obsidian's `requestUrl` (via `safeFetch`) reaches `127.0.0.1` on Linux with no CORS/header surprises.
 
 ### Phase 1 — Pull indexer MVP (2–3 weeks)
-- `register` + full `scan` reading vault directory
-- Chunk + embed + store in LanceDB/sqlite-vec
-- Plugin: `CompanionIndexBackend`, scan command replaces local force-reindex
-- `MergedSemanticRetriever` semantic leg → companion search only
+
+**Companion (new):**
+- `companion/src/vault/register.ts` — `POST /vaults/register { vaultId, rootPath, inclusions, exclusions, embeddingModel }`. Persist to a `vaults` table; reject if `rootPath` doesn't exist or isn't a directory. Port `categorizePatterns()` (see finding above) so server-side filtering matches plugin semantics.
+- `companion/src/vault/scanner.ts` — `POST /vaults/:id/scan { full?: boolean }` returns `{ jobId }`; `GET /vaults/:id/scan/:jobId` returns `{ state: queued|running|done|error, indexed, total, errors[] }`. Job runs async in-process. Walk vault root with `fs.readdir({ recursive: true })`, filter by patterns, read mtime, skip if `chunks.mtime >= file.mtime`.
+- `companion/src/index/chunker.ts` — port markdown heading-first splitter with `CHUNK_SIZE=6000`, `overlap=0`. Emit `id = "<relpath>#<index>"`. Either reuse LangChain `RecursiveCharacterTextSplitter` (matches plugin output byte-for-byte) or write a minimal port. Add a `chunks.test.ts` fixture suite cross-checking output against the plugin's v3 chunks for at least 3 representative notes.
+- `companion/src/index/embedder.ts` — replace pseudo-embedder with provider adapters: `openai` (env: `OPENAI_API_KEY`, model configurable), `ollama` (env: `OLLAMA_HOST`, default `http://127.0.0.1:11434`). Store `embedding_model` (string id) and `dim` on a `meta` table; on register, reject scan if requested model ≠ stored model unless `force=true` (triggers rebuild).
+- `DELETE /vaults/:id/index` — clear `chunks` + `vec_chunks` for the vault.
+- `GET /vaults/:id/stats` — `{ indexedFiles, embeddingModel, dimension, lastScanAt }`.
+
+**Plugin:**
+- `src/search/companion/CompanionIndexBackend.ts` — implement `SemanticIndexBackend`:
+  - `requiresEmbeddings()=false`, `isRemoteBackend()=true`
+  - `upsert` / `upsertBatch` → no-op + `logInfo` (mirror `MiyoIndexBackend.ts:58-100`)
+  - `indexVaultToVectorStore` → `POST /vaults/:id/scan`, poll progress, surface in existing UI
+  - `clearIndex` → `DELETE /vaults/:id/index`
+  - `getIndexedFiles` / `hasIndex` / `getLatestFileMtime` → companion API
+  - `garbageCollect` → no-op
+- `src/search/vectorStoreManager.ts` — extend `activeBackendKey` to `"orama" | "miyo" | "companion"`. Construct `companionBackend` in the constructor; pick it in `getBackendKey()` when `settings.enableVectorCompanion`. Refresh on settings change.
+- `src/search/RetrieverFactory.ts` — add a dedicated companion arm **before** the self-host arm:
+  ```ts
+  if (currentSettings.enableVectorCompanion) {
+    const backend = companionRegistry.get();
+    if (backend && await backend.isAvailable()) {
+      const semantic = new SelfHostRetriever(app, backend, normalizedOptions);
+      return {
+        retriever: new MergedSemanticRetriever(app, options, semantic),
+        type: "companion",
+        reason: "companion mode enabled",
+      };
+    }
+  }
+  ```
+  Keep lexical fallback if `isAvailable()` returns false; surface a `Notice` once per session.
+- Vault root sent at register time: `app.vault.adapter.getBasePath?.()` on desktop. Mobile has no FS root → companion mode is desktop-only; gate the settings UI with `Platform.isDesktopApp` if needed (or document the limitation).
+
+**Tests:**
+- `companion/src/index/chunker.test.ts` — golden output cross-check vs plugin v3.
+- `companion/src/index/store.test.ts` — upsert / search / cosine math sanity.
+- `src/search/companion/CompanionVectorClient.test.ts` — mock `safeFetch`, assert URL path, headers, error swallowing.
+- `src/search/companion/CompanionIndexBackend.test.ts` — assert no-op upserts, scan-trigger semantics.
+
+**Out of scope until Phase 2:** watcher, real-time updates, job WebSocket, settings UI for embedding model selection on the companion side.
 
 ### Phase 2 — Incremental + ops (2–3 weeks)
-- Filesystem watcher (debounced), incremental upsert/delete by path
-- Job progress WS or polling; surface in existing indexing progress UI ([`aiParams`](src/aiParams.ts) indexing state)
-- GC / model-change → companion rebuild endpoint
-- Nix flake app: `nix run .#companion`
+
+**Companion:**
+- `companion/src/vault/watcher.ts` — `chokidar.watch(rootPath, { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 500 } })`. Events: `add` → chunk + upsert; `change` → delete-by-path + chunk + upsert; `unlink` → delete-by-path. Re-apply include/exclude patterns on every event. Persist a per-vault `last_event_at` to skip re-walks on restart.
+- Scan-progress streaming: easier path is plugin polling `GET /vaults/:id/scan/:jobId` every 500 ms (works through `safeFetch`); WS only if polling overhead is observable. Avoid SSE — `requestUrl` doesn't stream.
+- Embedding rate limiter — token-bucket per provider, configurable via env. Surface `429` retries with backoff.
+- Concurrent-scan guard — `POST /scan` while another job is `running` returns existing `jobId` (idempotent).
+- Model-change handling — if `register` sends a new `embeddingModel`, return `409` unless `force=true`; on force, atomically `DELETE FROM vec_chunks` + drop+recreate `vec_chunks` with new dim + enqueue full scan.
+
+**Plugin:**
+- Hook companion scan progress into the existing indexing progress UI ([`aiParams`](src/aiParams.ts) indexing state already feeds a status bar). `CompanionIndexBackend.indexVaultToVectorStore` polls and emits the same events.
+- Re-register companion patterns when `qaInclusions` / `qaExclusions` change (subscribe in `companionRegistry`).
+- Disable `IndexEventHandler`'s active-leaf reindex when companion is active — already covered by the existing `shouldHandleEvents()` guard since `CompanionIndexBackend.isRemoteBackend()=true`. Confirm with a unit test.
+- Mobile: settings UI hides the toggle when `!Platform.isDesktopApp`, with a tooltip linking to docs (companion is loopback-only; running it on a phone is out of scope).
+
+**Operational:**
+- `flake.nix` — add a `companion` app: `nix run .#companion` builds + runs `node companion/dist/server.js`. Document `nix develop -c npm --prefix companion run dev` for iteration.
+- `companion/Dockerfile` (optional) — for users who want to run the companion in a container.
+- Health UI in `VectorCompanionSection`: poll `/health` every N seconds while the QA tab is open; show indexed-chunks count + dimension. Reuse the spike's `health()` cache.
+
+**Tests:**
+- `companion/src/vault/watcher.test.ts` — fixture vault, simulate file events, assert upsert / delete calls.
+- Integration test (gated by env): start companion in-process, run full scan against `__tests__/fixtures/vault`, query, assert non-empty hits.
 
 ### Phase 3 — Hardening (2+ weeks)
 - Multi-vault support (vaultId = hash of root path)
