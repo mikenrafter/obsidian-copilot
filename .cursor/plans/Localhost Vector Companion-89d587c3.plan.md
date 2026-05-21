@@ -1,31 +1,30 @@
-## <!-- 89d587c3-2014-44cc-a2d6-c5b40627d8aa -->
-
-todos:
-
-- id: "phase0-spike"
-  content: "Spike: companion HTTP health/search + plugin CompanionVectorClient + QA connection test"
-  status: completed
-- id: "protocol-types"
-  content: "Define shared protocol types (register, scan, search, stats) in companion/protocol"
-  status: completed
-- id: "companion-mvp"
-  content: "Build companion: vault register, full scan (pull), chunk, embed, LanceDB/sqlite-vec store"
-  status: completed
-- id: "plugin-backends"
-  content: "Implement CompanionIndexBackend + wire VectorStoreManager/RetrieverFactory/MergedSemanticRetriever"
-  status: completed
-- id: "settings-ux"
-  content: "Add enableVectorCompanion + host/port settings and health UI in QASettings"
-  status: completed
-- id: "phase2-watch"
-  content: "Add chokidar watcher, companion-side cancellation, embedding retries/rate limits, adaptive polling, and structured logs"
-  status: pending
-- id: "docs-nix"
-  content: "Finish companion ops docs, AGENTS.md commands, and flake app for companion process"
-  status: pending
-  isProject: false
-
 ---
+todos:
+  - id: "phase0-spike"
+    content: "Spike: companion HTTP health/search + plugin CompanionVectorClient + QA connection test"
+    status: completed
+  - id: "protocol-types"
+    content: "Define shared protocol types (register, scan, search, stats) in companion/protocol"
+    status: completed
+  - id: "companion-mvp"
+    content: "Build companion: vault register, full scan (pull), chunk, embed, LanceDB/sqlite-vec store"
+    status: completed
+  - id: "plugin-backends"
+    content: "Implement CompanionIndexBackend + wire VectorStoreManager/RetrieverFactory/MergedSemanticRetriever"
+    status: completed
+  - id: "settings-ux"
+    content: "Add enableVectorCompanion + host/port settings and health UI in QASettings"
+    status: completed
+  - id: "phase2-watch"
+    content: "Add chokidar watcher, companion-side cancellation, embedding retries/rate limits, adaptive polling, and structured logs"
+    status: pending
+  - id: "docs-nix"
+    content: "Finish companion ops docs, AGENTS.md commands, and flake app for companion process"
+    status: pending
+isProject: false
+---
+
+<!-- 89d587c3-2014-44cc-a2d6-c5b40627d8aa -->
 
 # Localhost Vector Companion (Pull Model)
 
